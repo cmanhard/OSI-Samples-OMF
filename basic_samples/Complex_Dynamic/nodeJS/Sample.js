@@ -1,81 +1,167 @@
-// Sample.js
+// sample.js
 
-var http = require("http");
-var config = require("./config.js");
+var config = require('./config.js');
+const readline = require('readline');
+var authObj = require('./auth.js');
+var omfObj = require('./omfClient.js');
 
 // retrieve configuration
+var endpoint = config.endpoint;
 var resource = config.resource;
 var clientId = config.clientId;
 var clientSecret = config.clientSecret;
-var tenantId = config.tenantId;
-var apiVersion = config.apiVersion;
 var success = true;
+var deleteData = true;
 var errorCap = {};
 
+var omfType = [{ 'id': 'TankMeasurement', 'type': 'object', 'classification': 'dynamic', 'properties': { 'Time': { 'format': 'date-time', 'type': 'string', 'isindex': true }, 'Pressure': { 'type': 'number', 'name': 'Tank Pressure', 'description': 'Tank Pressure in Pa' }, 'Temperature': { 'type': 'number', 'name': 'Tank Temperature', 'description': 'Tank Temperature in K' } } }];
+
+var omfContainer= function() {
+    return [{
+        'id': 'Tank1Measurements',
+        'typeid': 'TankMeasurement',
+        'typeVersion': '1.0.0.0'
+        }];
+}
+
+const rl = readline.createInterface({
+    input: process.stdin,
+    output: process.stdout,
+});
+
+var refreshToken = function (res, authClient) {
+    var obj = JSON.parse(res);
+    authClient.token = obj.access_token;
+    authClient.tokenExpires = obj.expires_on;
+};
 
 var logError = function (err) {    
     success = false;
     errorCap = err;
-    if  (typeof (err.statusCode) !== "undefined" && err.statusCode === 302) {
-        console.log("Error");
-        console.trace();
-    }
-    else {
-        console.trace();
-        console.log(err.message)
-        console.log(err.stack)
-        console.log(err.options.headers['Operation-Id'])
-        throw err;
-    }
+
+    console.log('Error');
+    console.trace();
+    console.log(err.message);
+    console.log(err.stack);
+    console.log(err.options.headers['Operation-Id']);
+    throw err;
 };
 
-var app = function (request1, response)
+var app = function ()
 {
-    if(request1 != null){
-        if (request1.url === '/favicon.ico') {
-            return;
-        }
-        response.writeHead(200, { "Content-Type": "text/plain" });
+    var omfURL = config.omfURL;
+    var authClient = new authObj.AuthClient(resource);
+    var omfClient = new omfObj.OMFClient(omfURL,authClient);
+    var getClientToken;
 
-        response.write("Sds Service Operations Begun!\n");
-        response.write("Check the console for updates")
+    if(endpoint == 1){//OCS
+        getClientToken = authClient.getToken(clientId,clientSecret, resource).then(
+            function (res) {
+                refreshToken(res, authClient);         
+            }
+        ).catch(function (err) { throw err });
+    } else if(endpoint == 2){//EDS
+        getClientToken =  function () {
+            authClient.tokenExpires = 0;
+        }      
+                
+    } else {//PI
+        getClientToken =  function () {
+            authClient.tokenExpires = 0;
+            omfClient = new omfObj.OMFClient(omfURL, null, clientId, clientSecret);
+        }      
     }
 
-    var clientObj = require("./Auth.js");
-
-    var sampleNamespaceId = config.namespaceId;
-
-    var client = new clientObj.SdsClient(resource, apiVersion);
-
-    // Step 1
-    var getClientToken = client.getToken(clientId,clientSecret, resource)
-        .catch(function (err) { throw err });
-
     var nowSeconds = function () { return Date.now() / 1000; };
-
-    // create an SdsType
+    
     var createType = getClientToken.then(
-        // Step 2
         function (res) {
-            console.log("\nCreating an SdsType")
-            refreshToken(res, client);
-            if (client.tokenExpires < nowSeconds) {
-                return checkTokenExpired(client).then(
-                    function (res) {
-                        refreshToken(res, client);
-                        return client.createType(tenantId, sampleNamespaceId, sampleType);
-                    }).catch(function (err) { logError(err); });
+            console.log('Creating Type');
+            if (authClient.tokenExpires >= nowSeconds) {
+                return function (res) {
+                        refreshToken(res, authClient);
+                        return  omfClient.createType(omfType);
+                    };
             } else {
-                return client.createType(tenantId, sampleNamespaceId, sampleType);
+                return  omfClient.createType(omfType);
             }
         }
     ).catch(function (err) { logError(err); });
+    
+    var createContainer = createType.then(
+        function (res) {
+            console.log('Creating Container');
+            containerObj = omfContainer();
+            if (authClient.tokenExpires >= nowSeconds) {
+                return function (res) {
+                        refreshToken(res, authClient);
+                        return  omfClient.createContainer(containerObj);
+                    };
+            } else {
+                return  omfClient.createContainer(containerObj);
+            }
+        }
+    ).catch(function (err) { logError(err); });    
+    
+    var sendData = createContainer.then(
+        function (res) {            
+            console.log('Creating Data');
+            createData();        
+        }        
+    ).catch(function (err) { logError(err); });
 
-    
-    if(request1 != null){
-        response.end();
+    var createData = function (){
+        rl.question('Enter pressure, temperature? n to cancel:', (answer) => {
+                try{
+                    if(answer== "n"){
+                        appFinished();                    
+                    }
+                    else{
+                        var arr = answer.split(',');
+                        var currtime = new Date();
+                        var dataStr = `[{ "containerid": "Tank1Measurements", "values": [{ "Time": "${currtime.toISOString()}", "Pressure": ${arr[0]}, "Temperature": ${arr[1]} }] }]`;
+                        var dataObj = JSON.parse(dataStr);
+                        if (authClient.tokenExpires >= nowSeconds) {
+                            return function (res) {
+                                    refreshToken(res, authClient);
+                                    return  omfClient.createData(dataObj).then(createData());
+                                };
+                        } else {
+                            return  omfClient.createData(dataObj).then(createData());
+                        }  
+                    }                  
+                }
+                catch(err)
+                {
+                    logError(err);
+                    appFinished();
+                }
+            });    
     }
-    
+
+    var appFinished = function () {
+            console.log();
+
+            if(!success){
+                throw errorCap;
+            }
+
+            if(deleteData){
+                omfClient.createContainer(omfContainer()).then(
+                        function (res) {         
+                            omfClient.deleteType(omfType).then(
+                                function (res) {         
+                                    process.exit();
+                                });
+                        }
+                    );
+            }
+            else{
+                console.log('All values sent successfully!');
+                process.exit();
+            }
+        }    
+            
     if(!success){
         throw errorCap;
     }
@@ -83,12 +169,4 @@ var app = function (request1, response)
     return getClientToken;
 };
 
-//if you want to run a server
-var toRun =  function() {
-    //This server is hosted over HTTP.  This is not secure and should not be used beyond local testing.
-    http.createServer(app).listen(8080);
-}
-
 app();
-//console.log("Server is listening at http://localhost:8080/");
-//console.log("Sds endpoint at " + resource);
