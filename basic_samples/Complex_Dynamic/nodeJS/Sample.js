@@ -88,6 +88,21 @@ var app = function ()
         }
     ).catch(function (err) { logError(err); });
     
+    var checkContainerCreate = createType.then(
+        function (res) {
+            console.log('Check Type');
+            containerObj = omfContainer();
+            if (authClient.tokenExpires >= nowSeconds) {
+                return function (res) {
+                        refreshToken(res, authClient);
+                        return  omfClient.createContainer(containerObj);
+                    };
+            } else {
+                return  omfClient.createContainer(containerObj);
+            }
+        }
+    ).catch(function (err) { logError(err); });   
+    
     var createContainer = createType.then(
         function (res) {
             console.log('Creating Container');
@@ -103,43 +118,59 @@ var app = function ()
         }
     ).catch(function (err) { logError(err); });    
     
-    var sendData = createContainer.then(
+    var sendDataWrapper = createContainer.then(
         function (res) {            
-            console.log('Creating Data');
+            console.log('Creating Data');            
+            if(process.argv.length >0){
+                process.argv.forEach(function (val, index, array) {
+                    sendData(val);
+                });
+
+            }
             createData();        
         }        
     ).catch(function (err) { logError(err); });
 
     var createData = function (){
-        rl.question('Enter pressure, temperature? n to cancel:', (answer) => {
-                try{
-                    if(answer== "n"){
-                        appFinished();                    
-                    }
-                    else{
-                        var arr = answer.split(',');
-                        var currtime = new Date();
-                        var dataStr = `[{ "containerid": "Tank1Measurements", "values": [{ "Time": "${currtime.toISOString()}", "Pressure": ${arr[0]}, "Temperature": ${arr[1]} }] }]`;
-                        var dataObj = JSON.parse(dataStr);
-                        if (authClient.tokenExpires >= nowSeconds) {
-                            return function (res) {
-                                    refreshToken(res, authClient);
-                                    return  omfClient.createData(dataObj).then(createData());
-                                };
-                        } else {
+        if(!ending){
+            rl.question('Enter pressure, temperature? n to cancel:', (answer) => {
+                sendData(answer);
+            });
+        }
+    }
+
+    var ending = false;
+    
+    var sendData = function (answer){
+        try{
+            if(answer== "n"){
+                appFinished();                    
+            }
+            else{
+                var arr = answer.split(',');
+                var currtime = new Date();
+                var dataStr = `[{ "containerid": "Tank1Measurements", "values": [{ "Time": "${currtime.toISOString()}", "Pressure": ${arr[0]}, "Temperature": ${arr[1]} }] }]`;
+                var dataObj = JSON.parse(dataStr);
+                if (authClient.tokenExpires >= nowSeconds) {
+                    return function (res) {
+                            refreshToken(res, authClient);
                             return  omfClient.createData(dataObj).then(createData());
-                        }  
-                    }                  
-                }
-                catch(err)
-                {
-                    logError(err);
-                    appFinished();
-                }
-            });    
+                        };
+                } else {
+                    return  omfClient.createData(dataObj).then(createData());
+                }  
+            }                  
+        }
+        catch(err)
+        {
+            logError(err);
+            appFinished();
+        }
+
     }
 
     var appFinished = function () {
+            ending = true;
             console.log();
 
             if(!success){
@@ -147,8 +178,10 @@ var app = function ()
             }
 
             if(deleteData){
+                console.log('Deleting Container');
                 omfClient.createContainer(omfContainer()).then(
-                        function (res) {         
+                        function (res) {        
+                            console.log('Deleting Type'); 
                             omfClient.deleteType(omfType).then(
                                 function (res) {         
                                     process.exit();
@@ -169,4 +202,5 @@ var app = function ()
     return getClientToken;
 };
 
+process.argv= process.argv.slice(2);
 app();
